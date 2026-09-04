@@ -1,0 +1,408 @@
+-- Portal Gun C-137 | Delta Mobile
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local TeleportService = game:GetService("TeleportService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local camera = workspace.CurrentCamera
+
+local SETTINGS = {
+    Color = Color3.fromRGB(0, 255, 70),
+    Size = 7,
+    Max = 2,
+    Cooldown = 1.3
+}
+
+local function sound(id, vol)
+    local s = Instance.new("Sound")
+    s.SoundId = "rbxassetid://" .. id
+    s.Volume = vol or 0.7
+    s.Parent = SoundService
+    return s
+end
+
+local openS  = sound(9120392871, 0.6)
+local closeS = sound(9120392872, 0.5)
+local shootS = sound(12222200, 0.8)
+local tpS    = sound(9120392873, 0.9)
+
+-- Портал
+local Portal = {}
+Portal.__index = Portal
+
+function Portal.new(pos, normal)
+    local self = setmetatable({}, Portal)
+    local model = Instance.new("Model")
+    model.Name = "Portal"
+
+    local disc = Instance.new("Part")
+    disc.Size = Vector3.new(SETTINGS.Size, SETTINGS.Size, 0.2)
+    disc.Anchored = true
+    disc.CanCollide = false
+    disc.Material = Enum.Material.Neon
+    disc.Color = SETTINGS.Color
+    disc.Transparency = 0.2
+    disc.CFrame = CFrame.lookAt(pos, pos + normal)
+    disc.Parent = model
+
+    local ring = Instance.new("Part")
+    ring.Size = Vector3.new(SETTINGS.Size + 1.2, SETTINGS.Size + 1.2, 0.1)
+    ring.Anchored = true
+    ring.CanCollide = false
+    ring.Material = Enum.Material.Neon
+    ring.Color = SETTINGS.Color
+    ring.Transparency = 0.5
+    ring.CFrame = disc.CFrame
+    ring.Parent = model
+
+    local light = Instance.new("PointLight")
+    light.Color = SETTINGS.Color
+    light.Range = 16
+    light.Brightness = 2.2
+    light.Parent = disc
+
+    local box = Instance.new("Part")
+    box.Size = Vector3.new(SETTINGS.Size * 0.85, SETTINGS.Size * 0.85, 2.5)
+    box.Anchored = true
+    box.CanCollide = false
+    box.Transparency = 1
+    box.CFrame = disc.CFrame
+    box.Parent = model
+
+    self.Model = model
+    self.Disc = disc
+    self.Ring = ring
+    self.Box = box
+    self.Pos = pos
+    self.Normal = normal
+    self.Connected = nil
+    self.Last = 0
+
+    disc.Size = Vector3.new(0.1, 0.1, 0.1)
+    ring.Size = Vector3.new(0.1, 0.1, 0.1)
+    TweenService:Create(disc, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
+        Size = Vector3.new(SETTINGS.Size, SETTINGS.Size, 0.2)
+    }):Play()
+    TweenService:Create(ring, TweenInfo.new(0.3, Enum.EasingStyle.Back), {
+        Size = Vector3.new(SETTINGS.Size + 1.2, SETTINGS.Size + 1.2, 0.1)
+    }):Play()
+
+    openS:Play()
+    model.Parent = workspace
+    return self
+end
+
+function Portal:Connect(other)
+    self.Connected = other
+    other.Connected = self
+end
+
+function Portal:TP(char)
+    if not self.Connected or tick() - self.Last < SETTINGS.Cooldown then return end
+    local hrp = char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    if (hrp.Position - self.Box.Position).Magnitude > SETTINGS.Size / 1.7 then return end
+
+    tpS:Play()
+    hrp.CFrame = CFrame.new(self.Connected.Pos + self.Connected.Normal * 3)
+    self.Last = tick()
+    self.Connected.Last = tick()
+end
+
+function Portal:Destroy()
+    closeS:Play()
+    TweenService:Create(self.Disc, TweenInfo.new(0.2), {Size = Vector3.new(0.1, 0.1, 0.1)}):Play()
+    TweenService:Create(self.Ring, TweenInfo.new(0.2), {Size = Vector3.new(0.1, 0.1, 0.1)}):Play()
+    task.wait(0.22)
+    if self.Model then self.Model:Destroy() end
+end
+
+-- Менеджер
+local Manager = {List = {}}
+
+function Manager:Add(pos, normal)
+    while #self.List >= SETTINGS.Max do
+        table.remove(self.List, 1):Destroy()
+    end
+    local p = Portal.new(pos, normal)
+    table.insert(self.List, p)
+    if #self.List == 2 then
+        self.List[1]:Connect(self.List[2])
+    end
+end
+
+function Manager:Clear()
+    for _, p in ipairs(self.List) do
+        p:Destroy()
+    end
+    self.List = {}
+end
+
+function Manager:Update()
+    for _, p in ipairs(self.List) do
+        if p.Connected then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                if plr.Character then
+                    p:TP(plr.Character)
+                end
+            end
+        end
+    end
+end
+
+-- Стрельба
+local function shoot()
+    if not character or not character:FindFirstChild("HumanoidRootPart") then return end
+    local origin = character.HumanoidRootPart.Position
+    local dir = camera.CFrame.LookVector * 130
+    local params = RaycastParams.new()
+    params.FilterDescendantsInstances = {character}
+    params.FilterType = Enum.RaycastFilterType.Exclude
+    local hit = workspace:Raycast(origin, dir, params)
+    if hit then
+        shootS:Play()
+        Manager:Add(hit.Position + hit.Normal * 0.3, hit.Normal)
+    end
+end
+
+-- ===== МЕНЮ (сворачивается + двигается) =====
+local gui = Instance.new("ScreenGui")
+gui.Name = "PortalMenu"
+gui.ResetOnSpawn = false
+gui.IgnoreGuiInset = true
+gui.Parent = player:WaitForChild("PlayerGui")
+
+local frame = Instance.new("Frame")
+frame.Size = UDim2.new(0, 200, 0, 260)
+frame.Position = UDim2.new(1, -220, 0.2, 0)
+frame.BackgroundColor3 = Color3.fromRGB(25, 25, 32)
+frame.BorderSizePixel = 0
+frame.Parent = gui
+
+local corner = Instance.new("UICorner")
+corner.CornerRadius = UDim.new(0, 12)
+corner.Parent = frame
+
+local stroke = Instance.new("UIStroke")
+stroke.Color = Color3.fromRGB(0, 255, 70)
+stroke.Thickness = 1.5
+stroke.Parent = frame
+
+-- Заголовок (за него двигаем)
+local title = Instance.new("TextButton")
+title.Size = UDim2.new(1, 0, 0, 36)
+title.BackgroundColor3 = Color3.fromRGB(0, 180, 50)
+title.Text = "  Portal Gun C-137"
+title.TextColor3 = Color3.new(1, 1, 1)
+title.Font = Enum.Font.GothamBold
+title.TextSize = 14
+title.TextXAlignment = Enum.TextXAlignment.Left
+title.Parent = frame
+
+local titleCorner = Instance.new("UICorner")
+titleCorner.CornerRadius = UDim.new(0, 12)
+titleCorner.Parent = title
+
+-- Кнопка свернуть
+local collapseBtn = Instance.new("TextButton")
+collapseBtn.Size = UDim2.new(0, 32, 0, 28)
+collapseBtn.Position = UDim2.new(1, -36, 0, 4)
+collapseBtn.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+collapseBtn.Text = "−"
+collapseBtn.TextColor3 = Color3.new(1, 1, 1)
+collapseBtn.Font = Enum.Font.GothamBold
+collapseBtn.TextSize = 18
+collapseBtn.Parent = title
+
+Instance.new("UICorner", collapseBtn).CornerRadius = UDim.new(0, 6)
+
+local content = Instance.new("Frame")
+content.Size = UDim2.new(1, 0, 1, -36)
+content.Position = UDim2.new(0, 0, 0, 36)
+content.BackgroundTransparency = 1
+content.Parent = frame
+
+-- Кнопка PORTAL
+local shootBtn = Instance.new("TextButton")
+shootBtn.Size = UDim2.new(0.9, 0, 0, 40)
+shootBtn.Position = UDim2.new(0.05, 0, 0, 10)
+shootBtn.BackgroundColor3 = Color3.fromRGB(0, 200, 60)
+shootBtn.Text = "PORTAL"
+shootBtn.TextColor3 = Color3.new(1, 1, 1)
+shootBtn.Font = Enum.Font.GothamBold
+shootBtn.TextSize = 16
+shootBtn.Parent = content
+Instance.new("UICorner", shootBtn).CornerRadius = UDim.new(0, 8)
+
+-- Кнопка CLEAR
+local clearBtn = Instance.new("TextButton")
+clearBtn.Size = UDim2.new(0.9, 0, 0, 36)
+clearBtn.Position = UDim2.new(0.05, 0, 0, 58)
+clearBtn.BackgroundColor3 = Color3.fromRGB(200, 50, 50)
+clearBtn.Text = "CLEAR"
+clearBtn.TextColor3 = Color3.new(1, 1, 1)
+clearBtn.Font = Enum.Font.GothamBold
+clearBtn.TextSize = 14
+clearBtn.Parent = content
+Instance.new("UICorner", clearBtn).CornerRadius = UDim.new(0, 8)
+
+-- Координаты
+local coordLabel = Instance.new("TextLabel")
+coordLabel.Size = UDim2.new(0.9, 0, 0, 18)
+coordLabel.Position = UDim2.new(0.05, 0, 0, 100)
+coordLabel.BackgroundTransparency = 1
+coordLabel.Text = "Координаты X Y Z"
+coordLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+coordLabel.Font = Enum.Font.Gotham
+coordLabel.TextSize = 12
+coordLabel.Parent = content
+
+local xBox = Instance.new("TextBox")
+xBox.Size = UDim2.new(0.28, 0, 0, 28)
+xBox.Position = UDim2.new(0.05, 0, 0, 120)
+xBox.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+xBox.Text = ""
+xBox.PlaceholderText = "X"
+xBox.TextColor3 = Color3.new(1, 1, 1)
+xBox.Font = Enum.Font.Gotham
+xBox.TextSize = 13
+xBox.Parent = content
+Instance.new("UICorner", xBox).CornerRadius = UDim.new(0, 6)
+
+local yBox = Instance.new("TextBox")
+yBox.Size = UDim2.new(0.28, 0, 0, 28)
+yBox.Position = UDim2.new(0.36, 0, 0, 120)
+yBox.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+yBox.Text = ""
+yBox.PlaceholderText = "Y"
+yBox.TextColor3 = Color3.new(1, 1, 1)
+yBox.Font = Enum.Font.Gotham
+yBox.TextSize = 13
+yBox.Parent = content
+Instance.new("UICorner", yBox).CornerRadius = UDim.new(0, 6)
+
+local zBox = Instance.new("TextBox")
+zBox.Size = UDim2.new(0.28, 0, 0, 28)
+zBox.Position = UDim2.new(0.67, 0, 0, 120)
+zBox.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+zBox.Text = ""
+zBox.PlaceholderText = "Z"
+zBox.TextColor3 = Color3.new(1, 1, 1)
+zBox.Font = Enum.Font.Gotham
+zBox.TextSize = 13
+zBox.Parent = content
+Instance.new("UICorner", zBox).CornerRadius = UDim.new(0, 6)
+
+local tpCoordBtn = Instance.new("TextButton")
+tpCoordBtn.Size = UDim2.new(0.9, 0, 0, 32)
+tpCoordBtn.Position = UDim2.new(0.05, 0, 0, 154)
+tpCoordBtn.BackgroundColor3 = Color3.fromRGB(0, 140, 200)
+tpCoordBtn.Text = "ТП по координатам"
+tpCoordBtn.TextColor3 = Color3.new(1, 1, 1)
+tpCoordBtn.Font = Enum.Font.GothamBold
+tpCoordBtn.TextSize = 13
+tpCoordBtn.Parent = content
+Instance.new("UICorner", tpCoordBtn).CornerRadius = UDim.new(0, 8)
+
+-- Place ID
+local placeBox = Instance.new("TextBox")
+placeBox.Size = UDim2.new(0.58, 0, 0, 30)
+placeBox.Position = UDim2.new(0.05, 0, 0, 196)
+placeBox.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
+placeBox.Text = ""
+placeBox.PlaceholderText = "Place ID"
+placeBox.TextColor3 = Color3.new(1, 1, 1)
+placeBox.Font = Enum.Font.Gotham
+placeBox.TextSize = 13
+placeBox.Parent = content
+Instance.new("UICorner", placeBox).CornerRadius = UDim.new(0, 6)
+
+local placeBtn = Instance.new("TextButton")
+placeBtn.Size = UDim2.new(0.3, 0, 0, 30)
+placeBtn.Position = UDim2.new(0.65, 0, 0, 196)
+placeBtn.BackgroundColor3 = Color3.fromRGB(0, 180, 100)
+placeBtn.Text = "GO"
+placeBtn.TextColor3 = Color3.new(1, 1, 1)
+placeBtn.Font = Enum.Font.GothamBold
+placeBtn.TextSize = 14
+placeBtn.Parent = content
+Instance.new("UICorner", placeBtn).CornerRadius = UDim.new(0, 6)
+
+-- Сворачивание
+local collapsed = false
+local fullSize = frame.Size
+
+collapseBtn.MouseButton1Click:Connect(function()
+    collapsed = not collapsed
+    if collapsed then
+        content.Visible = false
+        frame.Size = UDim2.new(0, 200, 0, 36)
+        collapseBtn.Text = "+"
+    else
+        content.Visible = true
+        frame.Size = fullSize
+        collapseBtn.Text = "−"
+    end
+end)
+
+-- Перетаскивание меню
+local dragging = false
+local dragStart, startPos
+
+title.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true
+        dragStart = input.Position
+        startPos = frame.Position
+    end
+end)
+
+UIS.InputChanged:Connect(function(input)
+    if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+        local delta = input.Position - dragStart
+        frame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+    end
+end)
+
+UIS.InputEnded:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = false
+    end
+end)
+
+-- Кнопки
+shootBtn.MouseButton1Click:Connect(shoot)
+clearBtn.MouseButton1Click:Connect(function() Manager:Clear() end)
+
+tpCoordBtn.MouseButton1Click:Connect(function()
+    local x, y, z = tonumber(xBox.Text), tonumber(yBox.Text), tonumber(zBox.Text)
+    if x and y and z and character and character:FindFirstChild("HumanoidRootPart") then
+        tpS:Play()
+        character.HumanoidRootPart.CFrame = CFrame.new(x, y, z)
+    end
+end)
+
+placeBtn.MouseButton1Click:Connect(function()
+    local id = tonumber(placeBox.Text)
+    if id then
+        TeleportService:Teleport(id, player)
+    end
+end)
+
+-- После смерти: пушка остаётся, порталы очищаются
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    Manager:Clear() -- порталы пропадают
+    task.wait(0.5)
+end)
+
+RunService.Heartbeat:Connect(function()
+    Manager:Update()
+end)
+
+print("Portal Gun C-137 loaded")
